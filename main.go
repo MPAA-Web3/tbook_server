@@ -47,10 +47,10 @@ func route(r *gin.Engine) {
 	// 不鉴权接口
 	public := r.Group("/api/v1")
 	{
-		public.GET("/ping", handle.GetPing)      // 不鉴权的测试接口 ✅
-		public.GET("/luckDraw", handle.LuckDraw) // 抽奖
-		public.GET("/userBalance", handle.UserBalance)
-
+		public.GET("/ping", handle.GetPing)            // 不鉴权的测试接口 ✅
+		public.GET("/luckDraw", handle.LuckDraw)       // 抽奖
+		public.GET("/userBalance", handle.UserBalance) //用户的余额
+		public.POST("/createUser", handle.CreateUser)  //创建用户
 	}
 
 	//// 鉴权接口
