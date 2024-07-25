@@ -9,6 +9,7 @@ import (
 )
 
 var Rdb *redis.Client
+var Ctx context.Context
 
 // NewRedis 初始化Redis数据库
 func NewRedis() {
@@ -23,6 +24,6 @@ func NewRedis() {
 		log.Fatalf("redis 启动失败: %v", ping.Err())
 	}
 	_ = redislock.New(Rdb)
-
+	Ctx = context.Background()
 	logs.Info("Redis数据库初始化连接成功")
 }

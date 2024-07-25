@@ -10,11 +10,12 @@ import (
 	"log"
 	"os"
 	"tbooks/configs"
+	"tbooks/models"
 	"time"
 )
 
 // db 全局MySQL数据库操作对象
-var db *gorm.DB
+var DB *gorm.DB
 
 // InitMysql 链接数据库
 func InitMysql() {
@@ -25,7 +26,7 @@ func InitMysql() {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.User, cfg.Password, cfg.Ip, cfg.Port, cfg.DbName)
 	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		panic("failed to connect database")
 	}
@@ -37,7 +38,8 @@ func InitMysql() {
 
 // CreateMysql 自动化表迁移
 func CreateMysql() error {
-	if err := db.AutoMigrate(); err != nil {
+	if err := DB.AutoMigrate(
+		models.User{}); err != nil {
 		log.Printf("automigrate table error: %v", err)
 	}
 	return nil
@@ -45,7 +47,7 @@ func CreateMysql() error {
 
 // StartDatabaseTransaction 启动数据库事务
 func StartDatabaseTransaction() (*gorm.DB, error) {
-	tx := db.Begin()
+	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
@@ -75,7 +77,7 @@ func InitLogger() {
 // InitCustomLogger 初始化 GORM 的自定义日志记录器
 func InitCustomLogger(w io.Writer) {
 	// 初始化 GORM 配置
-	db = db.Session(&gorm.Session{
+	DB = DB.Session(&gorm.Session{
 		Logger: &Logger{Writer: w}, // 使用自定义的日志记录器
 	})
 }
