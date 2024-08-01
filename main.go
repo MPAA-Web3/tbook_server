@@ -7,6 +7,7 @@ import (
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"github.com/robfig/cron/v3"
 	"log"
 	"strconv"
 	"tbooks/configs"
@@ -33,10 +34,24 @@ func main() {
 	// 启动定时任务
 	go startUserCacheJob()
 	go startFreeCardTaskJob()
+	// 创建 Cron 调度器
+	c := cron.New(cron.WithLocation(time.UTC))
+
+	// 添加每天午夜（0:00）执行的任务
+	_, err := c.AddFunc("0 0 * * *", func() {
+		addPrizeSlots()
+	})
+	if err != nil {
+		log.Fatalf("Failed to add cron job for addPrizeSlots: %v", err)
+	}
+	// 启动 Cron 调度器
+	c.Start()
+	// 让主 goroutine 运行，以保持程序不退出
+	select {}
 	r := gin.Default()
 	route(r)
 	r.Use(handle.Core())
-	err := r.Run(":" + configs.Config().Port)
+	err = r.Run(":" + configs.Config().Port)
 	if err != nil {
 		return
 	}
@@ -228,4 +243,19 @@ func processFreeCardTasks() {
 
 		log.Printf("Card granted to user %s, updated card count to Redis successfully\n", task.UserID)
 	}
+}
+
+func addPrizeSlots() {
+	// 假设你要在 Redis 中设置一个奖品名额的数量
+	prizeSlotKey := "prize_slots"
+	prizeSlotCount := 100 // 你可以根据需要设置奖品名额的数量
+
+	// 将奖品名额添加到 Redis 中
+	err := configs.Rdb.Set(context.Background(), prizeSlotKey, prizeSlotCount, 0).Err()
+	if err != nil {
+		log.Println("Failed to add prize slots to Redis:", err)
+		return
+	}
+
+	log.Printf("Prize slots set to %d in Redis successfully\n", prizeSlotCount)
 }
