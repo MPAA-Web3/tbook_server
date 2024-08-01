@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
-	"io/ioutil"
 	"log"
+	"strconv"
 	"tbooks/configs"
 	"tbooks/daos"
 	"tbooks/handle"
@@ -23,15 +24,6 @@ func initLogger() {
 	}
 }
 
-// ReadABIFromFile 读取 ABI 文件内容
-func ReadABIFromFile(filePath string) (string, error) {
-	data, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
 func main() {
 	initLogger() // 初始化日志
 	configs.Config()
@@ -40,6 +32,7 @@ func main() {
 	configs.NewRedis()
 	// 启动定时任务
 	go startUserCacheJob()
+	go startFreeCardTaskJob()
 	r := gin.Default()
 	route(r)
 	r.Use(handle.Core())
@@ -53,11 +46,20 @@ func route(r *gin.Engine) {
 	// 不鉴权接口
 	public := r.Group("/api/v1")
 	{
-		public.GET("/ping", handle.GetPing)             // 不鉴权的测试接口 ✅
-		public.POST("/luckDraw", handle.LuckDraw)       // 抽奖
-		public.POST("/userBalance", handle.UserBalance) //用户的余额
-		public.POST("/createUser", handle.CreateUser)   //创建用户
-		public.POST("/buyCard", handle.BuyCard)
+		public.GET("/ping", handle.GetPing)                          // 不鉴权的测试接口 ✅
+		public.POST("/luckDraw", handle.LuckDraw)                    // 抽奖
+		public.POST("/userBalance", handle.UserBalance)              //用户的余额
+		public.POST("/createUser", handle.CreateUser)                //创建用户
+		public.POST("/buyCard", handle.BuyCard)                      //购买卡片
+		public.GET("/getLeaderboard", handle.GetLeaderboard)         //获取排行榜
+		public.GET("/getRegularTasks", handle.GetRegularTasks)       //获取日常任务
+		public.GET("/getBoostTasks", handle.GetBoostTasks)           //获取Boost任务
+		public.GET("/userLoginTriggered", handle.UserLoginTriggered) //用户登陆触发
+		public.GET("/getFreeTasks", handle.GetFreeTasks)             //获取用户任务
+		//public.GET("/getInvitationList", handle.GetInvitationList)      //获取邀请列表
+		public.POST("/bindUserAddress", handle.BindUserAddress)         //绑定用户地址
+		public.POST("/shareTaskCompletion", handle.ShareTaskCompletion) //分享任务完成
+		public.POST("/createOrder", handle.CreateOrder)
 	}
 
 	//// 鉴权接口
@@ -76,6 +78,18 @@ func startUserCacheJob() {
 		select {
 		case <-ticker.C:
 			cacheUserData()
+		}
+	}
+}
+
+func startFreeCardTaskJob() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			processFreeCardTasks()
 		}
 	}
 }
@@ -156,4 +170,62 @@ func cacheUserData() {
 		}
 	}
 	log.Println("User data cached to Redis successfully")
+}
+
+func processFreeCardTasks() {
+	// 查询所有未发放且当前时间已经超过granted_at时间的任务
+	var tasks []models.FreeCardTask
+	err := daos.DB.Model(&models.FreeCardTask{}).
+		Where("is_granted = ? AND granted_at <= ?", false, time.Now().Add(-10*time.Second)).
+		Find(&tasks).Error
+	if err != nil {
+		log.Println("Failed to query ungranted tasks:", err)
+		return
+	}
+	for _, task := range tasks {
+		// 标记任务为已发放
+		task.IsGranted = true
+
+		// 更新任务记录
+		err := daos.DB.Save(&task).Error
+		if err != nil {
+			log.Println("Failed to update task record:", err)
+			continue
+		}
+
+		// 更新用户卡片数量到 Redis
+		cardCountKey := task.UserID + "_card_count"
+
+		// 获取当前用户的卡片数量
+		cardCountStr, err := configs.Rdb.Get(context.Background(), cardCountKey).Result()
+		if err == redis.Nil {
+			// 如果 Redis 中没有用户的卡片数量，则从数据库中获取
+			var user models.User
+			if err := daos.DB.Where("user_id = ?", task.UserID).First(&user).Error; err != nil {
+				log.Println("Failed to get user data from MySQL:", err)
+				continue
+			}
+			cardCountStr = string(user.CardCount)
+		} else if err != nil {
+			log.Println("Failed to get card count from Redis:", err)
+			continue
+		}
+
+		// 解析卡片数量并增加
+		cardCount, err := strconv.Atoi(cardCountStr)
+		if err != nil {
+			log.Println("Failed to parse card count from Redis:", err)
+			continue
+		}
+		cardCount++
+
+		// 更新卡片数量到 Redis
+		err = configs.Rdb.Set(context.Background(), cardCountKey, cardCount, 0).Err()
+		if err != nil {
+			log.Println("Failed to update card count in Redis:", err)
+			continue
+		}
+
+		log.Printf("Card granted to user %s, updated card count to Redis successfully\n", task.UserID)
+	}
 }
