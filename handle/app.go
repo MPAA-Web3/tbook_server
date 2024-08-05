@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 	"log"
 	"math/rand"
 	"net/http"
@@ -19,30 +20,81 @@ import (
 )
 
 type Prize struct {
-	Name     string `json:"name"`
-	Value    string `json:"value"`
-	ImageURL string `json:"image_url"` // 添加图片 URL 字段
+	Name              string    `json:"name"`
+	Value             string    `json:"value"`
+	ImageURL          string    `json:"image_url"`           // 图片 URL 字段
+	Probability       float64   `json:"probability"`         // 抽奖概率字段
+	IsTimeBased       bool      `json:"is_time_based"`       // 是否基于时间的抽奖
+	StartTime         time.Time `json:"start_time"`          // 抽奖开始时间
+	EndTime           time.Time `json:"end_time"`            // 抽奖结束时间
+	IsAutoDistributed bool      `json:"is_auto_distributed"` // 是否自动发放字段
 }
 
-// 为不同玩法定义奖品
-var prizes = map[string]map[string]Prize{
-	"1": { // 玩法 1: 抽奖四个奖品
-		"1": {Name: "100points", Value: "100", ImageURL: "1"},
-		"2": {Name: "200points", Value: "200", ImageURL: "2"},
-		"3": {Name: "300points", Value: "300", ImageURL: "3"},
-		"4": {Name: "1card", Value: "1", ImageURL: "4"},
-	},
-	"2": { // 玩法 2: 大转盘八个奖品
-		"1": {Name: "50points", Value: "50", ImageURL: "1"},
-		"2": {Name: "100points", Value: "100", ImageURL: "2"},
-		"3": {Name: "150points", Value: "150", ImageURL: "3"},
-		"4": {Name: "200points", Value: "200", ImageURL: "4"},
-		"5": {Name: "250points", Value: "250", ImageURL: "5"},
-		"6": {Name: "300points", Value: "300", ImageURL: "6"},
-		"7": {Name: "1card", Value: "1", ImageURL: "7"},
-		"8": {Name: "400points", Value: "400", ImageURL: "8"},
-	},
-}
+//var prizes = map[string]map[string]Prize{
+//	"1": { // 玩法 1: 抽奖四个奖品
+//		"1": {
+//			Name:              "100points",
+//			Value:             "100",
+//			ImageURL:          "1",
+//			Probability:       0.25,        // 25% 概率
+//			IsTimeBased:       false,       // 不基于时间的抽奖
+//			StartTime:         time.Time{}, // 未设置时间
+//			EndTime:           time.Time{}, // 未设置时间
+//			IsAutoDistributed: true,        // 自动发放
+//		},
+//		"2": {
+//			Name:              "200points",
+//			Value:             "200",
+//			ImageURL:          "2",
+//			Probability:       0.25,
+//			IsTimeBased:       false,
+//			StartTime:         time.Time{},
+//			EndTime:           time.Time{},
+//			IsAutoDistributed: false, // 手动发放
+//		},
+//		"3": {
+//			Name:              "300points",
+//			Value:             "300",
+//			ImageURL:          "3",
+//			Probability:       0.25,
+//			IsTimeBased:       false,
+//			StartTime:         time.Time{},
+//			EndTime:           time.Time{},
+//			IsAutoDistributed: false, // 手动发放
+//		},
+//		"4": {
+//			Name:              "1card",
+//			Value:             "1",
+//			ImageURL:          "4",
+//			Probability:       0.25,
+//			IsTimeBased:       true,                            // 开启时间抽奖
+//			StartTime:         time.Now().Add(-time.Hour * 24), // 开始时间：一天前
+//			EndTime:           time.Now().Add(time.Hour * 24),  // 结束时间：一天后
+//			IsAutoDistributed: true,                            // 自动发放
+//		},
+//		"5": {
+//			Name:              "200points",
+//			Value:             "200",
+//			ImageURL:          "2",
+//			Probability:       0.25,
+//			IsTimeBased:       false,
+//			StartTime:         time.Time{},
+//			EndTime:           time.Time{},
+//			IsAutoDistributed: false, // 手动发放
+//		},
+//	},
+//
+//	//"2": { // 玩法 2: 大转盘八个奖品
+//	//	"1": {Name: "50points", Value: "50", ImageURL: "1"},
+//	//	"2": {Name: "100points", Value: "100", ImageURL: "2"},
+//	//	"3": {Name: "150points", Value: "150", ImageURL: "3"},
+//	//	"4": {Name: "200points", Value: "200", ImageURL: "4"},
+//	//	"5": {Name: "250points", Value: "250", ImageURL: "5"},
+//	//	"6": {Name: "300points", Value: "300", ImageURL: "6"},
+//	//	"7": {Name: "1card", Value: "1", ImageURL: "7"},
+//	//	"8": {Name: "400points", Value: "400", ImageURL: "8"},
+//	//},
+//}
 
 func LuckDraw(c *gin.Context) {
 	var input struct {
@@ -55,6 +107,7 @@ func LuckDraw(c *gin.Context) {
 		errorss.HandleError(c, 400, err)
 		return
 	}
+
 	// 获取用户的卡片次数
 	cardCount, err := configs.Rdb.Get(c, input.UserID+"_card_count").Int()
 	if err == redis.Nil {
@@ -64,32 +117,127 @@ func LuckDraw(c *gin.Context) {
 		errorss.HandleError(c, 500, err) // 获取用户卡片次数失败
 		return
 	}
+
 	// 检查卡片次数
 	if cardCount <= 0 {
-		errorss.HandleError(c, 403, errors.New("Insufficient card ")) // 卡片次数不足
+		errorss.HandleError(c, 403, errors.New("Insufficient card")) // 卡片次数不足
 		return
 	}
+
 	// 扣除一次卡片次数
 	if err := configs.Rdb.Decr(c, input.UserID+"_card_count").Err(); err != nil {
 		errorss.HandleError(c, 500, err) // 更新卡片次数失败
 		return
 	}
+
 	// 选择对应玩法的奖品
-	availablePrizes, ok := prizes[input.PlayMode]
-	if !ok {
-		errorss.HandleError(c, 400, errors.New("Invalid PlayMode parameter")) // 无效的玩法参数
+	var availablePrizes []models.Prize
+	result := daos.DB.Where("play_mode = ?", input.PlayMode).Find(&availablePrizes)
+	if result.Error != nil {
+		errorss.HandleError(c, 500, result.Error) // 查询奖品失败
 		return
 	}
-	// 随机选择一个奖品
+
+	// 获取当前时间
+	now := time.Now()
+
+	// 筛选有效的奖品（时间范围检查和名额限制）
+	validPrizes := make([]models.Prize, 0)
+	for _, prize := range availablePrizes {
+		if (!prize.IsTimeBased || (now.After(prize.StartTime) && now.Before(prize.EndTime))) &&
+			(prize.Quota == 0 || prize.DistributedCount < prize.Quota) {
+			validPrizes = append(validPrizes, prize)
+		}
+	}
+
+	// 如果没有有效的奖品
+	if len(validPrizes) == 0 {
+		errorss.HandleError(c, 500, errors.New("No valid prizes available at this time"))
+		return
+	}
+
+	// 计算总概率
+	totalProbability := 0.0
+	for _, prize := range validPrizes {
+		totalProbability += prize.Probability
+	}
+
+	// 生成随机数
 	rand.Seed(time.Now().UnixNano())
-	prizeKey := []string{"1", "2", "3", "4", "5", "6", "7", "8"}[rand.Intn(len(availablePrizes))]
-	prize := availablePrizes[prizeKey]
+	random := rand.Float64() * totalProbability
+
+	// 根据随机数选择奖品（仅考虑有效奖品）
+	var selectedPrize models.Prize
+	cumulativeProbability := 0.0
+	for _, prize := range validPrizes {
+		cumulativeProbability += prize.Probability
+		if random < cumulativeProbability {
+			selectedPrize = prize
+			break
+		}
+	}
+
+	// 更新发放数量
+	if selectedPrize.Quota > 0 {
+		// 如果奖品已达到名额限制，则不允许发放
+		if err := daos.DB.Model(&models.Prize{}).Where("id = ?", selectedPrize.ID).
+			Updates(map[string]interface{}{
+				"distributed_count": gorm.Expr("distributed_count + ?", 1),
+			}).Error; err != nil {
+			errorss.HandleError(c, 500, err) // 更新发放数量失败
+			return
+		}
+
+		// 检查是否超过名额限制
+		var currentCount int64
+		if err := daos.DB.Model(&models.Prize{}).Where("id = ?", selectedPrize.ID).
+			Pluck("distributed_count", &currentCount).Error; err != nil {
+			errorss.HandleError(c, 500, err) // 获取发放数量失败
+			return
+		}
+		if currentCount > selectedPrize.Quota {
+			// 奖品发放数量已达上限，重新抽奖
+			// 将当前奖品从有效奖品列表中移除
+			var updatedPrizes []models.Prize
+			for _, prize := range validPrizes {
+				if prize.ID != selectedPrize.ID {
+					updatedPrizes = append(updatedPrizes, prize)
+				}
+			}
+			validPrizes = updatedPrizes
+
+			// 如果有效奖品列表为空，返回错误
+			if len(validPrizes) == 0 {
+				errorss.HandleError(c, 500, errors.New("No valid prizes available after updating"))
+				return
+			}
+
+			// 重新计算总概率
+			totalProbability = 0.0
+			for _, prize := range validPrizes {
+				totalProbability += prize.Probability
+			}
+
+			// 重新生成随机数
+			random = rand.Float64() * totalProbability
+
+			// 根据随机数重新选择奖品
+			cumulativeProbability = 0.0
+			for _, prize := range validPrizes {
+				cumulativeProbability += prize.Probability
+				if random < cumulativeProbability {
+					selectedPrize = prize
+					break
+				}
+			}
+		}
+	}
 
 	// 处理奖品
-	switch prize.Name {
-	case "100points", "200points", "300points", "400points", "50points", "150points", "250points":
-		// 奖品是余额
-		balance, err := strconv.ParseFloat(prize.Value, 64)
+	switch selectedPrize.Type {
+	case "points":
+		// 奖品是积分
+		balance, err := strconv.ParseFloat(selectedPrize.Value, 64)
 		if err != nil {
 			errorss.HandleError(c, 500, err) // 解析余额失败
 			return
@@ -101,14 +249,15 @@ func LuckDraw(c *gin.Context) {
 		}
 		newBalance, _ := configs.Rdb.Get(c, userBalanceKey).Float64()
 		errorss.JsonSuccess(c, gin.H{
-			"message":    "congratulations! You have won the prize!",
-			"prize":      prize.Name,
+			"message":    "Congratulations! You have won the prize!",
+			"name":       selectedPrize.Value + selectedPrize.Name,
+			"prize":      selectedPrize.Value,
 			"balance":    newBalance,
-			"number":     prize.ImageURL, // 包含奖品图片链接
+			"number":     selectedPrize.ImageURL, // 包含奖品图片链接
 			"card_count": cardCount - 1,
 		})
 
-	case "1card":
+	case "card":
 		// 奖品是抽奖卡
 		if err := configs.Rdb.Incr(c, input.UserID+"_card_count").Err(); err != nil {
 			errorss.HandleError(c, 500, err) // 更新卡片次数失败
@@ -116,11 +265,42 @@ func LuckDraw(c *gin.Context) {
 		}
 		newCardCount, _ := configs.Rdb.Get(c, input.UserID+"_card_count").Int()
 		errorss.JsonSuccess(c, gin.H{
-			"message":    "congratulations! You have won a lottery card!",
-			"prize":      prize.Name,
+			"message":    "Congratulations! You have won a lottery card!",
+			"name":       selectedPrize.Name,
+			"prize":      selectedPrize.Value,
 			"card_count": newCardCount,
-			"number":     prize.ImageURL, // 包含奖品图片链接
+			"number":     selectedPrize.ImageURL, // 包含奖品图片链接
 		})
+
+	case "material":
+		// 奖品是物料
+		if err := daos.DB.Model(&models.Prize{}).Where("id = ?", selectedPrize.ID).
+			Updates(map[string]interface{}{
+				"distributed_count": gorm.Expr("distributed_count + ?", 1),
+			}).Error; err != nil {
+			errorss.HandleError(c, 500, err) // 更新发放数量失败
+			return
+		}
+		{
+			errorss.JsonSuccess(c, gin.H{
+				"message":    "Congratulations! You have won a material prize!",
+				"name":       selectedPrize.Name,
+				"prize":      selectedPrize.Value,
+				"card_count": cardCount - 1,
+				"number":     selectedPrize.ImageURL, // 包含奖品图片链接
+			})
+		}
+
+	case "thank you":
+		{
+			errorss.JsonSuccess(c, gin.H{
+				"message":    "Thank you for participating!",
+				"name":       selectedPrize.Name,
+				"prize":      selectedPrize.Value,
+				"card_count": cardCount - 1,
+				"number":     selectedPrize.ImageURL, // 包含奖品图片链接
+			})
+		}
 
 	default:
 		errorss.HandleError(c, 500, errors.New("Unknown prize type")) // 未知奖品类型
@@ -135,37 +315,34 @@ func LuckDraw(c *gin.Context) {
 //
 //	// 绑定 JSON 输入到结构体
 //	if err := c.ShouldBindJSON(&input); err != nil {
-//		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 JSON 输入"})
+//		errorss.HandleError(c, 400, err)
 //		return
 //	}
-//
-//	// 查找用户
-//	var user models.User
-//	if err := daos.DB.Where("user_id = ?", input.UserID).First(&user).Error; err != nil {
-//		c.JSON(http.StatusNotFound, gin.H{"error": "用户未找到"})
+//	// 获取用户的卡片次数
+//	cardCount, err := configs.Rdb.Get(c, input.UserID+"_card_count").Int()
+//	if err == redis.Nil {
+//		errorss.HandleError(c, 404, errors.New("User not found")) // 用户未找到
+//		return
+//	} else if err != nil {
+//		errorss.HandleError(c, 500, err) // 获取用户卡片次数失败
 //		return
 //	}
-//
 //	// 检查卡片次数
-//	if user.CardCount <= 0 {
-//		c.JSON(http.StatusForbidden, gin.H{"error": "卡片次数不足"})
+//	if cardCount <= 0 {
+//		errorss.HandleError(c, 403, errors.New("Insufficient card ")) // 卡片次数不足
 //		return
 //	}
-//
 //	// 扣除一次卡片次数
-//	user.CardCount -= 1
-//	if err := daos.DB.Save(&user).Error; err != nil {
-//		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新用户失败"})
+//	if err := configs.Rdb.Decr(c, input.UserID+"_card_count").Err(); err != nil {
+//		errorss.HandleError(c, 500, err) // 更新卡片次数失败
 //		return
 //	}
-//
 //	// 选择对应玩法的奖品
 //	availablePrizes, ok := prizes[input.PlayMode]
 //	if !ok {
-//		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的玩法参数"})
+//		errorss.HandleError(c, 400, errors.New("Invalid PlayMode parameter")) // 无效的玩法参数
 //		return
 //	}
-//
 //	// 随机选择一个奖品
 //	rand.Seed(time.Now().UnixNano())
 //	prizeKey := []string{"1", "2", "3", "4", "5", "6", "7", "8"}[rand.Intn(len(availablePrizes))]
@@ -177,37 +354,39 @@ func LuckDraw(c *gin.Context) {
 //		// 奖品是余额
 //		balance, err := strconv.ParseFloat(prize.Value, 64)
 //		if err != nil {
-//			c.JSON(http.StatusInternalServerError, gin.H{"error": "解析余额失败"})
+//			errorss.HandleError(c, 500, err) // 解析余额失败
 //			return
 //		}
-//		user.Balance += balance
-//		if err := daos.DB.Save(&user).Error; err != nil {
-//			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新余额失败"})
+//		userBalanceKey := input.UserID + "_balance"
+//		if err := configs.Rdb.IncrByFloat(c, userBalanceKey, balance).Err(); err != nil {
+//			errorss.HandleError(c, 500, err) // 更新余额失败
 //			return
 //		}
-//		c.JSON(http.StatusOK, gin.H{
-//			"message": "congratulations! You have won the prize!",
-//			"prize":   prize.Name,
-//			"balance": user.Balance,
-//			"image":   prize.ImageURL, // 包含奖品图片链接
+//		newBalance, _ := configs.Rdb.Get(c, userBalanceKey).Float64()
+//		errorss.JsonSuccess(c, gin.H{
+//			"message":    "congratulations! You have won the prize!",
+//			"prize":      prize.Name,
+//			"balance":    newBalance,
+//			"number":     prize.ImageURL, // 包含奖品图片链接
+//			"card_count": cardCount - 1,
 //		})
 //
 //	case "1card":
 //		// 奖品是抽奖卡
-//		user.CardCount += 1
-//		if err := daos.DB.Save(&user).Error; err != nil {
-//			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新卡片次数失败"})
+//		if err := configs.Rdb.Incr(c, input.UserID+"_card_count").Err(); err != nil {
+//			errorss.HandleError(c, 500, err) // 更新卡片次数失败
 //			return
 //		}
-//		c.JSON(http.StatusOK, gin.H{
+//		newCardCount, _ := configs.Rdb.Get(c, input.UserID+"_card_count").Int()
+//		errorss.JsonSuccess(c, gin.H{
 //			"message":    "congratulations! You have won a lottery card!",
 //			"prize":      prize.Name,
-//			"card_count": user.CardCount,
-//			"image":      prize.ImageURL, // 包含奖品图片链接
+//			"card_count": newCardCount,
+//			"number":     prize.ImageURL, // 包含奖品图片链接
 //		})
 //
 //	default:
-//		c.JSON(http.StatusInternalServerError, gin.H{"error": "未知奖品类型"})
+//		errorss.HandleError(c, 500, errors.New("Unknown prize type")) // 未知奖品类型
 //	}
 //}
 
@@ -283,7 +462,8 @@ func UserBalance(c *gin.Context) {
 func BuyCard(c *gin.Context) {
 	// 定义结构体以绑定请求中的 JSON 数据
 	var input struct {
-		UserID string `json:"userid" binding:"required"` // 用户ID，必填
+		UserID string `json:"userid" binding:"required"`
+		Type   string `json:"type" binding:"required"`
 	}
 
 	// 将 JSON 请求体绑定到 input 结构体
@@ -299,15 +479,40 @@ func BuyCard(c *gin.Context) {
 		return
 	}
 
+	// 获取每日购买限制
+	var appConfig models.APP
+	if err := daos.DB.First(&appConfig).Error; err != nil {
+		errorss.HandleError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 检查用户当天的购买次数是否达到限制
+	reachedLimit, err := hasReachedPurchaseLimit(input.UserID, appConfig.DailyCardPurchaseLimit, input.Type)
+	if err != nil {
+		errorss.HandleError(c, http.StatusInternalServerError, err) // 查询购买记录失败
+		return
+	}
+	if reachedLimit {
+		errorss.HandleError(c, http.StatusForbidden, errors.New("Exceeding the number of times")) // 购买次数超限
+		return
+	}
+
+	// 从数据库中检索卡片类型信息
+	var cardType models.CardType
+	if err := daos.DB.Where("type = ?", input.Type).First(&cardType).Error; err != nil {
+		errorss.HandleError(c, http.StatusNotFound, err) // 卡片类型未找到
+		return
+	}
+
 	// 检查用户是否有足够的余额购买卡片
-	if user.Balance < 100 {
+	if user.Balance < cardType.Price {
 		errorss.HandleError(c, http.StatusPaymentRequired, nil) // 余额不足
 		return
 	}
 
 	// 扣除余额并增加卡片数量
-	user.Balance -= 100
-	user.CardCount += 1
+	user.Balance -= cardType.Price
+	user.CardCount += cardType.CardCount
 	user.UpdatedAt = time.Now() // 更新最后修改时间
 
 	// 保存更新后的用户信息到数据库
@@ -316,13 +521,24 @@ func BuyCard(c *gin.Context) {
 		return
 	}
 
+	// 记录购买操作
+	purchaseRecord := models.PurchaseRecord{
+		UserID:       input.UserID,
+		PurchaseTime: time.Now(),
+		PointsSpent:  cardType.Price,
+		CardCount:    cardType.CardCount,
+		Type:         cardType.Type,
+	}
+	if err := daos.DB.Create(&purchaseRecord).Error; err != nil {
+		errorss.HandleError(c, http.StatusInternalServerError, err) // 记录购买失败
+		return
+	}
+
 	// 更新 Redis 缓存中的用户数据
-	// 将用户数据序列化为 JSON
 	userJSON, err := json.Marshal(user)
 	if err != nil {
 		log.Println("Failed to marshal user data:", err)
 	} else {
-		// 将用户数据缓存到 Redis 中
 		err = configs.Rdb.Set(configs.Ctx, "user:"+user.UserID, userJSON, 0).Err()
 		if err != nil {
 			log.Println("Failed to cache user data to Redis:", err)
@@ -349,6 +565,28 @@ func BuyCard(c *gin.Context) {
 		"user":    user,
 	})
 }
+
+// Check if the user has reached the purchase limit for today
+// Check if the user has reached the purchase limit for today based on a specific type
+func hasReachedPurchaseLimit(userID string, limit int, purchaseType string) (bool, error) {
+	// 获取当前日期
+	startOfDay := time.Now().Truncate(24 * time.Hour)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	var count int64
+	// 查询当天用户指定类型的购买记录数
+	err := daos.DB.Model(&models.PurchaseRecord{}).
+		Where("user_id = ? AND purchase_time >= ? AND purchase_time < ? AND type = ?", userID, startOfDay, endOfDay, purchaseType).
+		Count(&count).Error
+
+	if err != nil {
+		return false, err // 查询失败
+	}
+
+	// 检查是否超过限制
+	return count >= int64(limit), nil
+}
+
 func CreateUser(c *gin.Context) {
 	var input struct {
 		UserID            string `json:"userid" binding:"required"`
@@ -526,7 +764,9 @@ func GetRegularTasks(c *gin.Context) {
 		{Name: "Invite Bonus", Description: "邀请奖金", ImageURL: "invite_bonus.png", Completed: false}, // 假设未完成
 		{Name: "Join Channel", Description: "加入频道", ImageURL: "join_channel.png", Completed: user.JoinedDiscord},
 		{Name: "Follow us on X", Description: "在X上关注我们", ImageURL: "follow_us_on_x.png", Completed: user.JoinedX},
-		{Name: "Join Telegram Channel", Description: "加入Telegram频道", ImageURL: "join_telegram_channel.png", Completed: user.JoinedTelegram}, // 假设已完成
+		{Name: "Join Telegram Channel", Description: "加入Telegram频道", ImageURL: "join_telegram_channel.png", Completed: user.JoinedTelegram},    // 假设已完成
+		{Name: "Join Telegram group", Description: "加入Telegram频道", ImageURL: "join_telegram_channel.png", Completed: user.JoinedTelegramGroup}, // 假设已完成
+
 	}
 
 	// 返回任务列表
@@ -825,9 +1065,10 @@ func RecordAchievement(userID, achievementName, rewardType string, amount int64)
 }
 
 type Order struct {
-	UserID  string  `json:"user_id"`
-	Address string  `json:"address"`
-	Amount  float64 `json:"amount"`
+	UserID  string  `json:"user_id"` //用户
+	Address string  `json:"address"` //用户地址
+	Amount  float64 `json:"amount"`  //数量
+	Hash    string  `json:"hash"`    //哈希
 }
 
 func CreateOrder(c *gin.Context) {
@@ -838,11 +1079,12 @@ func CreateOrder(c *gin.Context) {
 	}
 
 	orders := models.Order{
-		UserID:    order.UserID,
-		Address:   order.Address,
-		Status:    "pending",
-		Amount:    order.Amount,
-		CreatedAt: time.Now(),
+		UserID:          order.UserID,
+		Address:         order.Address,
+		Status:          "pending",
+		Amount:          order.Amount,
+		TransactionHash: order.Hash,
+		CreatedAt:       time.Now(),
 	}
 
 	// 保存到数据库
@@ -874,6 +1116,12 @@ func ShareTaskCompletion(c *gin.Context) {
 		errorss.HandleError(c, http.StatusNotFound, errors.New("User not found"))
 		return
 	}
+	// 从数据库中读取 APP 配置
+	var appConfig models.APP
+	if err := daos.DB.First(&appConfig).Error; err != nil {
+		errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to retrieve app configuration"))
+		return
+	}
 
 	// 处理任务完成状态
 	switch input.Type {
@@ -887,12 +1135,12 @@ func ShareTaskCompletion(c *gin.Context) {
 		}
 		user.JoinedDiscord = true
 		// 增加用户余额
-		if err := IncrementBalance(input.UserID, 10000); err != nil {
+		if err := IncrementBalance(input.UserID, appConfig.DiscordAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
 			return
 		}
 		// 记录奖励
-		if err := RecordAchievement(input.UserID, "discord", "Balance", 10000); err != nil {
+		if err := RecordAchievement(input.UserID, "discord", "Balance", appConfig.DiscordAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to record achievement"))
 			return
 		}
@@ -907,12 +1155,12 @@ func ShareTaskCompletion(c *gin.Context) {
 		}
 		user.JoinedX = true
 		// 增加用户余额
-		if err := IncrementBalance(input.UserID, 10000); err != nil {
+		if err := IncrementBalance(input.UserID, appConfig.TwitterAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
 			return
 		}
 		// 记录奖励
-		if err := RecordAchievement(input.UserID, "x", "Balance", 10000); err != nil {
+		if err := RecordAchievement(input.UserID, "x", "Balance", appConfig.TwitterAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to record achievement"))
 			return
 		}
@@ -927,12 +1175,32 @@ func ShareTaskCompletion(c *gin.Context) {
 		}
 		user.JoinedTelegram = true
 		// 增加用户余额
-		if err := IncrementBalance(input.UserID, 10000); err != nil {
+		if err := IncrementBalance(input.UserID, appConfig.TelegramGroupAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
 			return
 		}
 		// 记录奖励
-		if err := RecordAchievement(input.UserID, "telegram", "Balance", 10000); err != nil {
+		if err := RecordAchievement(input.UserID, "telegram", "Balance", appConfig.TelegramChannelAmount); err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to record achievement"))
+			return
+		}
+
+	case "telegramGroup":
+		// 检查是否已有奖励记录
+		var existingReward models.AchievementReward
+		if err := daos.DB.Where("user_id = ? AND achievement_name = ?", input.UserID, "telegramGroup").First(&existingReward).Error; err == nil {
+			// 奖励记录已存在
+			errorss.HandleError(c, http.StatusOK, errors.New("Reward already granted for this achievement"))
+			return
+		}
+		user.JoinedTelegramGroup = true
+		// 增加用户余额
+		if err := IncrementBalance(input.UserID, appConfig.TelegramGroupAmount); err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
+			return
+		}
+		// 记录奖励
+		if err := RecordAchievement(input.UserID, "telegramGroup", "Balance", appConfig.TelegramGroupAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to record achievement"))
 			return
 		}
@@ -952,4 +1220,18 @@ func ShareTaskCompletion(c *gin.Context) {
 
 	// 返回成功信息
 	errorss.JsonSuccess(c, gin.H{"message": "Task completion status updated successfully and balance increased by 10000", "user": user})
+}
+
+func GetTypeList(c *gin.Context) {
+	var cardTypes []models.CardType
+
+	// 查询数据库中的所有 CardType
+	if err := daos.DB.Find(&cardTypes).Error; err != nil {
+		// 如果查询出现错误，返回 HTTP 500 错误
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve card types"})
+		return
+	}
+
+	// 返回成功信息
+	errorss.JsonSuccess(c, cardTypes)
 }

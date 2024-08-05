@@ -7,7 +7,6 @@ import (
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
-	"github.com/robfig/cron/v3"
 	"log"
 	"strconv"
 	"tbooks/configs"
@@ -34,24 +33,24 @@ func main() {
 	// 启动定时任务
 	go startUserCacheJob()
 	go startFreeCardTaskJob()
-	// 创建 Cron 调度器
-	c := cron.New(cron.WithLocation(time.UTC))
-
-	// 添加每天午夜（0:00）执行的任务
-	_, err := c.AddFunc("0 0 * * *", func() {
-		addPrizeSlots()
-	})
-	if err != nil {
-		log.Fatalf("Failed to add cron job for addPrizeSlots: %v", err)
-	}
-	// 启动 Cron 调度器
-	c.Start()
-	// 让主 goroutine 运行，以保持程序不退出
-	select {}
+	//// 创建 Cron 调度器
+	//c := cron.New(cron.WithLocation(time.UTC))
+	//
+	//// 添加每天午夜（0:00）执行的任务
+	//_, err := c.AddFunc("0 0 * * *", func() {
+	//	addPrizeSlots()
+	//})
+	//if err != nil {
+	//	log.Fatalf("Failed to add cron job for addPrizeSlots: %v", err)
+	//}
+	//// 启动 Cron 调度器
+	//c.Start()
+	//// 让主 goroutine 运行，以保持程序不退出
+	//select {}
 	r := gin.Default()
 	route(r)
 	r.Use(handle.Core())
-	err = r.Run(":" + configs.Config().Port)
+	err := r.Run(":" + configs.Config().Port)
 	if err != nil {
 		return
 	}
@@ -74,7 +73,9 @@ func route(r *gin.Engine) {
 		//public.GET("/getInvitationList", handle.GetInvitationList)      //获取邀请列表
 		public.POST("/bindUserAddress", handle.BindUserAddress)         //绑定用户地址
 		public.POST("/shareTaskCompletion", handle.ShareTaskCompletion) //分享任务完成
-		public.POST("/createOrder", handle.CreateOrder)
+		public.POST("/createOrder", handle.CreateOrder)                 //创建订单
+		public.GET("/getTypeList", handle.GetTypeList)                  //获得TypeList
+
 	}
 
 	//// 鉴权接口

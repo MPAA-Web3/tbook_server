@@ -15,3 +15,12 @@ python3 -m venv myenv
 source myenv/bin/activate
 pip install sqlalchemy python-telegram-bot pymysql
 nohup python demo.py > demo.log 2>&1 &
+
+
+
+sudo apt install python3-venv
+python3 -m venv myenv
+source myenv/bin/activate
+pip install pymysql requests
+pip install TonTools
+nohup python tonn.py > ton.log 2>&1 &
