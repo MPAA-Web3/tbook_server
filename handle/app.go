@@ -281,15 +281,26 @@ func LuckDraw(c *gin.Context) {
 			errorss.HandleError(c, 500, err) // 更新发放数量失败
 			return
 		}
-		{
-			errorss.JsonSuccess(c, gin.H{
-				"message":    "Congratulations! You have won a material prize!",
-				"name":       selectedPrize.Name,
-				"prize":      selectedPrize.Value,
-				"card_count": cardCount - 1,
-				"number":     selectedPrize.ImageURL, // 包含奖品图片链接
-			})
+
+		// 创建实物中奖记录
+		prizeRecord := models.PhysicalPrize{
+			UserID:    1, // 假设用户ID是1，实际中应该从请求中获取
+			PrizeName: selectedPrize.Name,
+			WinTime:   time.Now(),
 		}
+
+		// 插入实物中奖记录到数据库
+		if err := daos.DB.Create(&prizeRecord).Error; err != nil {
+			errorss.HandleError(c, 500, err) // 插入实物中奖记录失败
+			return
+		}
+		errorss.JsonSuccess(c, gin.H{
+			"message":    "Congratulations! You have won a material prize!",
+			"name":       selectedPrize.Name,
+			"prize":      selectedPrize.Value,
+			"card_count": cardCount - 1,
+			"number":     selectedPrize.ImageURL, // 包含奖品图片链接
+		})
 
 	case "thank you":
 		{
@@ -819,8 +830,8 @@ func GetFreeTasks(c *gin.Context) {
 
 	// 定义任务列表
 	tasks := []RegularTask{
-		{Name: "Invite a Frens", Description: "Earn 500", ImageURL: "invite_10_frens.png", Completed: inviteCount >= 10},
-		{Name: "Invite a Premium Fren", Description: "Earn 500", ImageURL: "invite_bonus.png", Completed: false}, // 假设未完成
+		{Name: "Invite a Frens", Description: "500 points + 3 Free Card", ImageURL: "invite_10_frens.png", Completed: inviteCount >= 10},
+		{Name: "Invite a Premium Fren", Description: "2500 points + 15 Free Card", ImageURL: "invite_bonus.png", Completed: false}, // 假设未完成
 	}
 
 	// 返回任务列表
@@ -834,7 +845,7 @@ func GetBoostTasks(c *gin.Context) {
 	todayEnd := todayStart.Add(24 * time.Hour)
 
 	// 计算今日剩余可领取次数
-	limit := int64(5) // 查询今日领取的任务次数
+	limit := int64(20) // 查询今日领取的任务次数
 	var dailyCount int64
 	err := daos.DB.Model(&models.FreeCardTask{}).
 		Where("user_id = ? AND created_at BETWEEN ? AND ? AND is_granted = ? ", userID, todayStart, todayEnd, true).
@@ -877,7 +888,7 @@ func GetBoostTasks(c *gin.Context) {
 	tasks := map[string]interface{}{
 		"daily_remaining_tasks": map[string]interface{}{
 			"name":        "daily_remaining_tasks",
-			"description": strconv.FormatInt(dailyCount, 10) + "/5" + "available",
+			"description": strconv.FormatInt(dailyCount+5, 10) + "/20 " + "available",
 			"value":       strconv.FormatInt(dailyCount, 10),
 			"url":         "http://example.com/daily_remaining_tasks", // 可替换为实际的URL
 			"completed":   dailyCount >= 5,
@@ -901,6 +912,12 @@ func UserLoginTriggered(c *gin.Context) {
 		return
 	}
 
+	var user models.User
+	if err := daos.DB.Where("user_id = ?", userID).First(&user).Error; err != nil {
+		errorss.HandleError(c, http.StatusNotFound, err) // 用户未找到
+		return
+	}
+
 	// 获取今天的时间范围
 	todayStart := time.Now().Truncate(24 * time.Hour)
 	todayEnd := todayStart.Add(24 * time.Hour)
@@ -908,15 +925,31 @@ func UserLoginTriggered(c *gin.Context) {
 	// 查询今日未领取的任务次数
 	var count int64
 	err := daos.DB.Model(&models.FreeCardTask{}).
-		Where("user_id = ? AND created_at BETWEEN ? AND ? AND is_granted = ?", userID, todayStart, todayEnd, false).
+		Where("user_id = ? AND created_at BETWEEN ? AND ?", userID, todayStart, todayEnd).
 		Count(&count).Error
 	if err != nil {
 		errorss.HandleError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	// 检查今日发放次数是否超过限制（假设限制为 5 次）
-	limit := 5
+	if count <= int64(0) {
+		user.CardCount += 5
+		if err := daos.DB.Save(&user).Error; err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, err)
+			return
+		}
+
+		// 缓存用户的卡片数量到 Redis
+		balanceKey := user.UserID + "_card_count"
+		err = configs.Rdb.Set(configs.Ctx, balanceKey, user.CardCount, 0).Err()
+		if err != nil {
+			log.Println("Failed to cache user card count to Redis:", err)
+		}
+
+	}
+
+	// 检查今日发放次数是否超过限制（假设限制为 15 次）
+	limit := 15
 	if count >= int64(limit) {
 		errorss.HandleError(c, http.StatusTooManyRequests, fmt.Errorf("Daily limit exceeded"))
 		return
@@ -1134,6 +1167,11 @@ func ShareTaskCompletion(c *gin.Context) {
 			return
 		}
 		user.JoinedDiscord = true
+		// 保存更新后的用户信息
+		if err := daos.DB.Save(&user).Error; err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user information"))
+			return
+		}
 		// 增加用户余额
 		if err := IncrementBalance(input.UserID, appConfig.DiscordAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
@@ -1154,6 +1192,11 @@ func ShareTaskCompletion(c *gin.Context) {
 			return
 		}
 		user.JoinedX = true
+		// 保存更新后的用户信息
+		if err := daos.DB.Save(&user).Error; err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user information"))
+			return
+		}
 		// 增加用户余额
 		if err := IncrementBalance(input.UserID, appConfig.TwitterAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
@@ -1174,11 +1217,17 @@ func ShareTaskCompletion(c *gin.Context) {
 			return
 		}
 		user.JoinedTelegram = true
+		// 保存更新后的用户信息
+		if err := daos.DB.Save(&user).Error; err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user information"))
+			return
+		}
 		// 增加用户余额
 		if err := IncrementBalance(input.UserID, appConfig.TelegramGroupAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
 			return
 		}
+
 		// 记录奖励
 		if err := RecordAchievement(input.UserID, "telegram", "Balance", appConfig.TelegramChannelAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to record achievement"))
@@ -1194,6 +1243,11 @@ func ShareTaskCompletion(c *gin.Context) {
 			return
 		}
 		user.JoinedTelegramGroup = true
+		// 保存更新后的用户信息
+		if err := daos.DB.Save(&user).Error; err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user information"))
+			return
+		}
 		// 增加用户余额
 		if err := IncrementBalance(input.UserID, appConfig.TelegramGroupAmount); err != nil {
 			errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user balance"))
@@ -1212,18 +1266,18 @@ func ShareTaskCompletion(c *gin.Context) {
 
 	user.UpdatedAt = time.Now()
 
-	// 保存更新后的用户信息
-	if err := daos.DB.Save(&user).Error; err != nil {
-		errorss.HandleError(c, http.StatusInternalServerError, errors.New("Unable to update user information"))
-		return
-	}
-
 	// 返回成功信息
 	errorss.JsonSuccess(c, gin.H{"message": "Task completion status updated successfully and balance increased by 10000", "user": user})
 }
 
 func GetTypeList(c *gin.Context) {
 	var cardTypes []models.CardType
+
+	userID := c.Query("userid")
+	if userID == "" {
+		errorss.HandleError(c, http.StatusBadRequest, errors.New("userid is required"))
+		return
+	}
 
 	// 查询数据库中的所有 CardType
 	if err := daos.DB.Find(&cardTypes).Error; err != nil {
@@ -1232,6 +1286,137 @@ func GetTypeList(c *gin.Context) {
 		return
 	}
 
+	// 从数据库中检索用户信息
+	var user models.User
+	if err := daos.DB.Where("user_id = ?", userID).First(&user).Error; err != nil {
+		errorss.HandleError(c, http.StatusNotFound, err) // 用户未找到
+		return
+	}
+
+	// 获取每日购买限制
+	var appConfig models.APP
+	if err := daos.DB.First(&appConfig).Error; err != nil {
+		errorss.HandleError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 创建一个新的结构体来包含 CardType 和 CanPurchase 字段
+	type CardTypeWithPurchaseStatus struct {
+		models.CardType
+		CanPurchase bool `json:"can_purchase"`
+	}
+
+	var cardTypesWithStatus []CardTypeWithPurchaseStatus
+
+	// 遍历 cardTypes 并检查用户的购买限制
+	for _, cardType := range cardTypes {
+		reachedLimit, err := hasReachedPurchaseLimit(userID, appConfig.DailyCardPurchaseLimit, cardType.Type)
+		if err != nil {
+			errorss.HandleError(c, http.StatusInternalServerError, err) // 查询购买记录失败
+			return
+		}
+
+		cardTypeWithStatus := CardTypeWithPurchaseStatus{
+			CardType:    cardType,
+			CanPurchase: !reachedLimit,
+		}
+
+		cardTypesWithStatus = append(cardTypesWithStatus, cardTypeWithStatus)
+	}
+
 	// 返回成功信息
-	errorss.JsonSuccess(c, cardTypes)
+	errorss.JsonSuccess(c, cardTypesWithStatus)
+}
+
+// GetPrizes handles the request to fetch all prizes.
+func GetPrizes(c *gin.Context) {
+	var prizes []models.Prize
+	if err := daos.DB.Find(&prizes).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch prizes"})
+		return
+	}
+	c.JSON(http.StatusOK, prizes)
+}
+
+// UpdatePrize 处理奖品更新
+func UpdatePrize(c *gin.Context) {
+	var updateData models.Prize
+
+	// 从请求体中获取更新的数据
+	if err := c.ShouldBindJSON(&updateData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	// 根据 IsTimeBased 的值决定是否清空时间字段
+	updates := map[string]interface{}{
+		"name":                updateData.Name,
+		"type":                updateData.Type,
+		"value":               updateData.Value,
+		"probability":         updateData.Probability,
+		"is_time_based":       updateData.IsTimeBased,
+		"play_mode":           updateData.PlayMode,
+		"is_auto_distributed": updateData.IsAutoDistributed,
+		"quota":               updateData.Quota,
+		"image_url":           updateData.ImageURL,
+	}
+
+	// 如果 IsTimeBased 为 false，清空时间字段
+	if !updateData.IsTimeBased {
+		updates["start_time"] = nil
+		updates["end_time"] = nil
+	} else {
+		updates["start_time"] = updateData.StartTime
+		updates["end_time"] = updateData.EndTime
+	}
+
+	// 执行更新操作
+	if err := daos.DB.Model(&models.Prize{}).Where("id = ?", updateData.ID).
+		Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update prize"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Prize updated successfully"})
+}
+
+// GetPrizeList 获取奖品列表
+func GetPrizeList(c *gin.Context) {
+	mode := c.Query("mode")
+
+	var exhibitions []models.Exhibition
+
+	// 根据 mode 查询不同的展览数据
+	switch mode {
+	case "1":
+		// 查询某种条件下的展览数据（这里的条件根据实际需求调整）
+		if err := daos.DB.Where("play_mode = ?", "1").Find(&exhibitions).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "error": "Failed to fetch exhibitions"})
+			return
+		}
+
+	case "2":
+		// 查询某种条件下的展览数据（这里的条件根据实际需求调整）
+		if err := daos.DB.Where("play_mode = ?", "2").Find(&exhibitions).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "error": "Failed to fetch exhibitions"})
+			return
+		}
+
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "error": "Invalid mode"})
+		return
+	}
+
+	// 格式化返回的数据
+	response := []gin.H{}
+	for _, exhibition := range exhibitions {
+		response = append(response, gin.H{
+			"id":   exhibition.Number,
+			"name": exhibition.Name,
+			"icon": exhibition.ImageURL,
+		})
+	}
+
+	// 返回成功信息
+	errorss.JsonSuccess(c, response)
 }

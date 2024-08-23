@@ -70,12 +70,14 @@ func route(r *gin.Engine) {
 		public.GET("/getBoostTasks", handle.GetBoostTasks)           //获取Boost任务
 		public.GET("/userLoginTriggered", handle.UserLoginTriggered) //用户登陆触发
 		public.GET("/getFreeTasks", handle.GetFreeTasks)             //获取用户任务
-		//public.GET("/getInvitationList", handle.GetInvitationList)      //获取邀请列表
+		//public.GET("/getInvitationList", handle.GetInvitationList)     	    //获取邀请列表
 		public.POST("/bindUserAddress", handle.BindUserAddress)         //绑定用户地址
 		public.POST("/shareTaskCompletion", handle.ShareTaskCompletion) //分享任务完成
 		public.POST("/createOrder", handle.CreateOrder)                 //创建订单
 		public.GET("/getTypeList", handle.GetTypeList)                  //获得TypeList
-
+		public.GET("/prizes", handle.GetPrizes)                         // 获取所有奖品
+		public.POST("/updatePrize", handle.UpdatePrize)                 // 更新奖品
+		public.GET("/getPrizeList", handle.GetPrizeList)                // 获取奖品列表
 	}
 
 	//// 鉴权接口

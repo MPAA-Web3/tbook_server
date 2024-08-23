@@ -6,6 +6,9 @@ export GOARCH=amd64
 GO111MODULE="on" CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 go build -o main main.go
 
+sudo lsof -i :8080
+
+
 ps aux | grep python
 
 nohup python demo.py > demo.log 2>&1 &
